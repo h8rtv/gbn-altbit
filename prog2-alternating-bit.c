@@ -45,10 +45,18 @@ struct pkt {
 #define ACK_BIT  1
 #define NACK_BIT 0
 
-int a_sending; // A is sending a message
-struct pkt a_packet; // A packet
-int a_seq; // A current seq number
-int b_expected_seq; // What packet is B expecting
+struct sender {
+  int is_sending;
+  struct pkt last_packet;
+  int seq;
+};
+
+struct rcver {
+  int seq;
+};
+
+struct sender a_sender;
+struct rcver b_rcver;
 
 int calc_checksum(packet)
   struct pkt* packet;
@@ -78,17 +86,18 @@ A_output(message)
   struct msg message;
 {
   printf("Para enviar: %s\n", message.data);
-  if (a_sending) return;
-  a_sending = 1;
-
-  a_packet.seqnum = a_seq;
-  a_packet.acknum = ACK_BIT;
-
-  strcpy(a_packet.payload, message.data);
-  set_checksum(&a_packet);
-  tolayer3(A, a_packet);
+  if (a_sender.is_sending) return;
+  a_sender.is_sending = 1;
+  struct pkt packet;
+  packet.seqnum = a_sender.seq;
+  packet.acknum = ACK_BIT;
+  strcpy(packet.payload, message.data);
+  set_checksum(&packet);
+  tolayer3(A, packet);
   starttimer(A, TIMEOUT);
-  printf("Enviado: %s\n", a_packet.payload);
+
+  a_sender.last_packet = packet;
+  printf("Enviado: %s\n", packet.payload);
 }
 
 B_output(message)  /* need be completed only for extra credit */
@@ -102,12 +111,12 @@ A_input(packet)
 {
   if (is_corrupted(&packet) || packet.acknum == NACK_BIT) {
     stoptimer(A);
-    tolayer3(A, a_packet);
+    tolayer3(A, a_sender.last_packet);
     starttimer(A, TIMEOUT);
-    printf("Reenviado (corrompido ou NACK): %s\n", a_packet.payload);
+    printf("Reenviado (corrompido ou NACK): %s\n", a_sender.last_packet.payload);
   } else {
-    a_seq = (a_seq + 1) % 2;
-    a_sending = 0;
+    a_sender.seq = (a_sender.seq + 1) % 2;
+    a_sender.is_sending = 0;
     stoptimer(A);
   }
 
@@ -117,10 +126,10 @@ A_input(packet)
 /* called when A's timer goes off */
 A_timerinterrupt()
 {
-  if (a_sending) {
-    tolayer3(A, a_packet);
+  if (a_sender.is_sending) {
+    tolayer3(A, a_sender.last_packet);
     starttimer(A, TIMEOUT);
-    printf("Reenviado (timeout): %s\n", a_packet.payload);
+    printf("Reenviado (timeout): %s\n", a_sender.last_packet.payload);
   }
 }  
 
@@ -128,8 +137,8 @@ A_timerinterrupt()
 /* entity A routines are called. You can use it to do any initialization */
 A_init()
 {
-  a_sending = 0;
-  a_seq = 0;
+  a_sender.is_sending = 0;
+  a_sender.seq = 0;
 }
 
 
@@ -146,12 +155,12 @@ B_input(packet)
     .payload = "",
   };
   if (!corrupt) {
-    if (packet.seqnum == b_expected_seq) {
+    if (packet.seqnum == b_rcver.seq) {
       printf("Recebido: %s\n", packet.payload);
       tolayer5(B, packet.payload);
-      b_expected_seq = (b_expected_seq + 1) % 2;
+      b_rcver.seq = (b_rcver.seq + 1) % 2;
     } else {
-      ack.seqnum = (b_expected_seq + 1) % 2; // send previous ack
+      ack.seqnum = (b_rcver.seq + 1) % 2; // send previous ack
     }
   }
   set_checksum(&ack);
@@ -169,7 +178,7 @@ B_timerinterrupt()
 /* entity B routines are called. You can use it to do any initialization */
 B_init()
 {
-  b_expected_seq = 0;
+  b_rcver.seq = 0;
 }
 
 
