@@ -41,7 +41,7 @@ struct pkt {
 #define A 0
 #define B 1
 
-#define TIMEOUT  500.f
+#define TIMEOUT  20.f
 #define ACK_BIT  1
 #define NACK_BIT 0
 
@@ -77,6 +77,7 @@ int is_corrupted(packet)
 A_output(message)
   struct msg message;
 {
+  printf("Para enviar: %s\n", message.data);
   if (a_sending) return;
   a_sending = 1;
 
@@ -103,6 +104,7 @@ A_input(packet)
     stoptimer(A);
     tolayer3(A, a_packet);
     starttimer(A, TIMEOUT);
+    printf("Reenviado (corrompido ou NACK): %s\n", a_packet.payload);
   } else {
     a_seq = (a_seq + 1) % 2;
     a_sending = 0;
@@ -118,6 +120,7 @@ A_timerinterrupt()
   if (a_sending) {
     tolayer3(A, a_packet);
     starttimer(A, TIMEOUT);
+    printf("Reenviado (timeout): %s\n", a_packet.payload);
   }
 }  
 
@@ -142,13 +145,17 @@ B_input(packet)
     .acknum = corrupt ? NACK_BIT : ACK_BIT,
     .payload = "",
   };
-  if (!corrupt && packet.seqnum == b_expected_seq) {
-    printf("Recebido: %s\n", packet.payload);
-    tolayer5(B, packet.payload);
-    b_expected_seq = (b_expected_seq + 1) % 2;
+  if (!corrupt) {
+    if (packet.seqnum == b_expected_seq) {
+      printf("Recebido: %s\n", packet.payload);
+      tolayer5(B, packet.payload);
+      b_expected_seq = (b_expected_seq + 1) % 2;
+    } else {
+      ack.seqnum = (b_expected_seq + 1) % 2; // send previous ack
+    }
   }
-    set_checksum(&ack);
-    tolayer3(B, ack);
+  set_checksum(&ack);
+  tolayer3(B, ack);
 
   //printf("A_input RCVD:\n\tseqnum: %d\n\tacknum: %d\n\tchecksum: %d\n\tpayload: %s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
 }
