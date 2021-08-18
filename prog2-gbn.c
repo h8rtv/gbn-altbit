@@ -92,9 +92,12 @@ int queue_next(queue, current)
   return (current + 1) % queue->queue_size;
 }
 
-int queue_front(queue)
+int queue_start(queue)
   struct pkt_queue* queue;
 {
+  if (queue->front == -1) {
+    return queue->queue_size;
+  }
   return queue->front;
 }
 
@@ -126,7 +129,7 @@ enqueue(queue, item)
   struct pkt_queue* queue;
   struct pkt item;
 {
-  if ((queue->front == 0 && queue->back >= queue->queue_size - 1) || queue->front >= queue->back + 1)
+  if (is_full(queue))
       return;
   if(queue->front == -1)
   {
@@ -137,7 +140,7 @@ enqueue(queue, item)
   } else {
     queue->back = 0;
   }
-  printf("enq %d %d\n", queue->front, queue->back);
+
   queue->q[queue->back] = item;
 }
 
@@ -150,7 +153,7 @@ int is_empty(queue)
 int is_full(queue)
   struct pkt_queue* queue;
 {
-  return ((queue->front == 0 && queue->back >= queue->queue_size - 1) || queue->front >= queue->back + 1);
+  return ((queue->front == 0 && queue->back >= queue->queue_size - 1) || queue->front == queue->back + 1);
 }
 
 struct pkt dequeue(queue)
@@ -168,6 +171,15 @@ struct pkt dequeue(queue)
     queue->front++; 
   }
   return queue->q[front];
+}
+
+struct pkt print_queue(queue)
+  struct pkt_queue* queue;
+{
+  for (int i = queue_start(queue); i != queue_end(queue); i = queue_next(queue, i)) {
+    printf("%c ", queue->q[i].payload[0]);
+  }
+  printf("\n");
 }
 
 int calc_checksum(packet)
@@ -192,6 +204,18 @@ int is_corrupted(packet)
   return calc_checksum(packet) != packet->checksum;
 }
 
+int next_seq(prev_seq)
+  int prev_seq;
+{
+  return (prev_seq + 1) % SEQ_SPACE;
+}
+
+int prev_seq(next_seq)
+  int next_seq;
+{
+  return max(next_seq - 1, 0);
+}
+
 
 /* called from layer 5, passed the data to be sent to other side */
 A_output(message)
@@ -199,32 +223,32 @@ A_output(message)
 {
   struct pkt packet;
   printf("Para enviar: %s\n", message.data);
-  if (is_full(&a_sender.window)) {
-    printf("Janela cheia, adicionando ao buffer: %s\n", message.data);
-    strcpy(packet.payload, message.data);
-    enqueue(&a_buffer, packet);
-  } else {
-    if (!is_empty(&a_buffer)) {
-      packet = dequeue(&a_buffer);
-      printf("Há requisições no buffer, bufferizando %s e enviando %s\n", message.data, packet.payload);
-    } else {
-      strcpy(packet.payload, message.data);
-    }
-    packet.seqnum = a_sender.seq;
-    a_sender.seq = (a_sender.seq + 1) % SEQ_SPACE;
-    packet.acknum = ACK_BIT;
-    set_checksum(&packet);
-    tolayer3(A, packet);
+  strcpy(packet.payload, message.data);
+  enqueue(&a_buffer, packet);
+
+  if (!is_full(&a_sender.window)) {
     if (a_sender.timer_running) {
       stoptimer(A);
     }
+    while (!is_full(&a_sender.window) && !is_empty(&a_buffer)) {
+      printf("Há requisições no buffer, enviando-as\n");
+      packet = dequeue(&a_buffer);
+      packet.seqnum = a_sender.seq;
+      a_sender.seq = next_seq(a_sender.seq);
+      packet.acknum = ACK_BIT;
+      set_checksum(&packet);
+      tolayer3(A, packet);
+      enqueue(&a_sender.window, packet);
+
+      printf("Enviado: %s\n", packet.payload);
+      printf("A_output SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
+    }
+    printf("Janela atual(enq): ");
+    print_queue(&a_sender.window);
+    printf("Buffer Atual: ");
+    print_queue(&a_buffer);
     starttimer(A, TIMEOUT);
     a_sender.timer_running = 1;
-
-    enqueue(&a_sender.window, packet);
-    printf("Enviado: %s\n", packet.payload);
-    printf("A_output SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
-
   }
 }
 
@@ -241,14 +265,14 @@ A_input(packet)
   stoptimer(A);
 
   if (is_corrupted(&packet) || packet.acknum == NACK_BIT) {
-    for (int i = queue_front(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
+    for (int i = queue_start(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
       struct pkt last_pkt = a_sender.window.q[i];
       tolayer3(A, last_pkt);
       printf("Reenviado (corrompido ou NACK): %s\n", last_pkt.payload);
       printf("A_input SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %s\n", last_pkt.seqnum, last_pkt.acknum, last_pkt.checksum, last_pkt.payload);
     }
   } else {
-    int i = queue_front(&a_sender.window);
+    int i = queue_start(&a_sender.window);
     int seq = a_sender.window.q[i].seqnum;
     int count = 0;
     while (i != queue_end(&a_sender.window) && seq <= packet.seqnum) {
@@ -258,9 +282,10 @@ A_input(packet)
     }
     while(count > 0) {
       struct pkt removed = dequeue(&a_sender.window);
-      printf("dequeueing p %d\n", removed.seqnum);
       count--;
     }
+    printf("Janela atual (deq): ");
+    print_queue(&a_sender.window);
   }
 
   starttimer(A, TIMEOUT);
@@ -269,7 +294,7 @@ A_input(packet)
 /* called when A's timer goes off */
 A_timerinterrupt()
 {
-  for (int i = queue_front(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
+  for (int i = queue_start(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
     struct pkt resend_pkt = a_sender.window.q[i];
     tolayer3(A, resend_pkt);
     printf("Reenviado (timeout): %s\n", resend_pkt.payload);
@@ -301,13 +326,17 @@ B_input(packet)
     .acknum = corrupt ? NACK_BIT : ACK_BIT,
     .payload = "",
   };
-  if (!corrupt && packet.seqnum == b_rcver.seq) {
+  if (!corrupt) { 
+    if (packet.seqnum == b_rcver.seq) {
       printf("Recebido: %s\n", packet.payload);
       tolayer5(B, packet.payload);
-      b_rcver.seq = (b_rcver.seq + 1) % SEQ_SPACE;
-      set_checksum(&ack);
-      tolayer3(B, ack);
+      b_rcver.seq = next_seq(b_rcver.seq);
+    } else {
+      ack.seqnum = prev_seq(b_rcver.seq);
+    }
   }
+  set_checksum(&ack);
+  tolayer3(B, ack);
 
   printf("B_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
 }
