@@ -41,6 +41,8 @@ struct pkt {
 #define A 0
 #define B 1
 
+//#define CUMULATIVE
+
 #define TIMEOUT  20.f
 #define BUF_SIZE 50
 #define WINDOW_SIZE 8
@@ -268,6 +270,7 @@ void A_input(struct pkt packet)
   } else if (is_nack(&packet)) {
     printf("A_input recebeu um NACK.\n");
   } else {
+#ifdef CUMULATIVE
     int count = 0;
     int found = 0;
     for (int i = queue_start(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
@@ -287,6 +290,14 @@ void A_input(struct pkt packet)
       }
       printf("reconhecido(s).\n");
     }
+#else
+    int front = queue_start(&a_sender.window);
+    struct pkt front_packet = a_sender.window.q[front];
+    if (front_packet.seqnum == packet.acknum) {
+      struct pkt rec = dequeue(&a_sender.window);
+      printf("A_input pacote %d reconhecido.\n", packet.acknum);
+    }
+#endif
     stoptimer(A);
     a_sender.timer_running = 0;
     if (!is_empty(&a_sender.window)) {
@@ -336,7 +347,11 @@ void B_input(struct pkt packet)
     make_nack(&ack);
   } else if (packet.seqnum != b_rcver.seq) {
     printf("B_input detectou pacote não esperado. Esperava %d e recebeu %d.\n", b_rcver.seq, packet.seqnum);
+#ifdef CUMULATIVE
     ack.acknum = prev_seq(b_rcver.seq);
+#else
+    ack.acknum = packet.seqnum;
+#endif
   } else {
     printf("Recebido: %.20s\n", packet.payload);
     ack.acknum = packet.seqnum;
