@@ -58,8 +58,7 @@ struct rcver {
 struct sender a_sender;
 struct rcver b_rcver;
 
-int calc_checksum(packet)
-  struct pkt* packet;
+int calc_checksum(struct pkt* packet)
 {
   int checksum = packet->seqnum + packet->acknum;
   for (int i = 0; i < 20; i++) {
@@ -68,74 +67,77 @@ int calc_checksum(packet)
   return checksum;
 }
 
-set_checksum(packet)
-  struct pkt* packet;
+void set_checksum(struct pkt* packet)
 {
   packet->checksum = calc_checksum(packet);
 }
 
-int is_corrupted(packet)
-  struct pkt* packet;
+int is_corrupted(struct pkt* packet)
 {
   return calc_checksum(packet) != packet->checksum;
 }
 
 
 /* called from layer 5, passed the data to be sent to other side */
-A_output(message)
-  struct msg message;
+void A_output(struct msg message)
 {
-  printf("Para enviar: %s\n", message.data);
-  if (a_sender.is_sending) return;
+  printf("Para enviar: %.20s\n", message.data);
+  if (a_sender.is_sending) {
+    printf("Um pacote já está sendo enviado.\n");
+    return;
+  }
+
   a_sender.is_sending = 1;
   struct pkt packet;
   packet.seqnum = a_sender.seq;
   packet.acknum = ACK_BIT;
   strcpy(packet.payload, message.data);
+
   set_checksum(&packet);
   tolayer3(A, packet);
-  starttimer(A, TIMEOUT);
 
+  starttimer(A, TIMEOUT);
+  a_sender.seq = (a_sender.seq + 1) % 2;
   a_sender.last_packet = packet;
+
   printf("Enviado: %s\n", packet.payload);
+  printf("A_output SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
 }
 
-B_output(message)  /* need be completed only for extra credit */
-  struct msg message;
+void B_output(struct msg message)  /* need be completed only for extra credit */
 {
 }
 
 /* called from layer 3, when a packet arrives for layer 4 */
-A_input(packet)
-  struct pkt packet;
+void A_input(struct pkt packet)
 {
-  if (is_corrupted(&packet) || packet.acknum == NACK_BIT) {
-    stoptimer(A);
-    tolayer3(A, a_sender.last_packet);
-    starttimer(A, TIMEOUT);
-    printf("Reenviado (corrompido ou NACK): %s\n", a_sender.last_packet.payload);
+  printf("A_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
+  if (is_corrupted(&packet)) {
+    printf("A_input detectou pacote corrompido.\n");
+  } else if (packet.acknum == NACK_BIT) {
+    printf("A_input recebeu um NACK.\n");
   } else {
-    a_sender.seq = (a_sender.seq + 1) % 2;
+    printf("A_input pacote %d reconhecido.\n", packet.seqnum);
     a_sender.is_sending = 0;
     stoptimer(A);
   }
-
-  //printf("A_input RCVD:\n\tseqnum: %d\n\tacknum: %d\n\tchecksum: %d\n\tpayload: %s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
 }
 
 /* called when A's timer goes off */
-A_timerinterrupt()
+void A_timerinterrupt()
 {
   if (a_sender.is_sending) {
+    struct pkt resend_pkt = a_sender.last_packet;
+    printf("Reenviado (timeout): %.20s\n", resend_pkt.payload);
+    printf("A_timerinterrupt SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", resend_pkt.seqnum, resend_pkt.acknum, resend_pkt.checksum, resend_pkt.payload);
     tolayer3(A, a_sender.last_packet);
-    starttimer(A, TIMEOUT);
-    printf("Reenviado (timeout): %s\n", a_sender.last_packet.payload);
   }
+  starttimer(A, TIMEOUT);
 }  
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
-A_init()
+void A_init()
 {
   a_sender.is_sending = 0;
   a_sender.seq = 0;
@@ -145,38 +147,41 @@ A_init()
 /* Note that with simplex transfer from a-to-B, there is no B_output() */
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
-B_input(packet)
-  struct pkt packet;
+void B_input(struct pkt packet)
 {
-  int corrupt = is_corrupted(&packet);
-  struct pkt ack = {
-    .seqnum = packet.seqnum,
-    .acknum = corrupt ? NACK_BIT : ACK_BIT,
-    .payload = "",
-  };
-  if (!corrupt) {
-    if (packet.seqnum == b_rcver.seq) {
-      printf("Recebido: %s\n", packet.payload);
-      tolayer5(B, packet.payload);
-      b_rcver.seq = (b_rcver.seq + 1) % 2;
-    } else {
-      ack.seqnum = (b_rcver.seq + 1) % 2; // send previous ack
-    }
+  struct pkt ack;
+  memset(ack.payload, 0, 20);
+
+  if (is_corrupted(&packet)) {
+    printf("B_input detectou pacote corrompido.\n");
+    ack.seqnum = b_rcver.seq;
+    ack.acknum = NACK_BIT;
+  } else if (packet.seqnum != b_rcver.seq) {
+    printf("B_input detectou pacote não esperado. Esperava %d e recebeu %d.\n", b_rcver.seq, packet.seqnum);
+    ack.seqnum = b_rcver.seq;
+    ack.acknum = ACK_BIT;
+  } else {
+    printf("Recebido: %.20s\n", packet.payload);
+    ack.seqnum = packet.seqnum;
+    ack.acknum =  ACK_BIT;
+    tolayer5(B, packet.payload);
+    b_rcver.seq = (b_rcver.seq + 1) % 2;
   }
+
   set_checksum(&ack);
   tolayer3(B, ack);
 
-  //printf("A_input RCVD:\n\tseqnum: %d\n\tacknum: %d\n\tchecksum: %d\n\tpayload: %s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
+  printf("B_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
 }
 
 /* called when B's timer goes off */
-B_timerinterrupt()
+void B_timerinterrupt()
 {
 }
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
-B_init()
+void B_init()
 {
   b_rcver.seq = 0;
 }

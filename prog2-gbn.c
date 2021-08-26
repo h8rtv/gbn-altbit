@@ -44,7 +44,7 @@ struct pkt {
 #define ACK_BIT  1
 #define NACK_BIT 0
 
-#define TIMEOUT  3.f
+#define TIMEOUT  10.f
 #define BUF_SIZE 50
 #define WINDOW_SIZE 8
 #define SEQ_SPACE (2 * WINDOW_SIZE)
@@ -72,9 +72,7 @@ struct sender a_sender;
 struct rcver b_rcver;
 struct pkt_queue a_buffer;
 
-init_queue(queue, size)
-  struct pkt_queue* queue;
-  int size;
+void init_queue(struct pkt_queue* queue, int size)
 {
   queue->queue_size = size;
   queue->back = -1;
@@ -82,9 +80,18 @@ init_queue(queue, size)
   queue->q = (struct pkt*) malloc(size * sizeof(struct pkt));
 }
 
-int queue_next(queue, current)
+int is_empty(struct pkt_queue* queue)
+{
+  return queue->front == -1;
+}
+
+int is_full(queue)
   struct pkt_queue* queue;
-  int current;
+{
+  return ((queue->front == 0 && queue->back >= queue->queue_size - 1) || queue->front == queue->back + 1);
+}
+
+int queue_next(struct pkt_queue* queue, int current)
 {
   if (current == queue->back || is_empty(queue)) 
     return queue->queue_size;
@@ -92,8 +99,7 @@ int queue_next(queue, current)
   return (current + 1) % queue->queue_size;
 }
 
-int queue_start(queue)
-  struct pkt_queue* queue;
+int queue_start(struct pkt_queue* queue)
 {
   if (queue->front == -1) {
     return queue->queue_size;
@@ -101,14 +107,12 @@ int queue_start(queue)
   return queue->front;
 }
 
-int queue_end(queue)
-  struct pkt_queue* queue;
+int queue_end(struct pkt_queue* queue)
 {
   return queue->queue_size;
 }
 
-int queue_length(queue)
-  struct pkt_queue* queue;
+int queue_length(struct pkt_queue* queue)
 {
   if (queue->front == -1)
     return 0;
@@ -119,15 +123,12 @@ int queue_length(queue)
   return queue->back - queue->front + 1;
 }
 
-destroy_queue(queue)
-  struct pkt_queue* queue;
+void destroy_queue(struct pkt_queue* queue)
 {
   free(queue->q);
 }
 
-enqueue(queue, item)
-  struct pkt_queue* queue;
-  struct pkt item;
+void enqueue(struct pkt_queue* queue, struct pkt item)
 {
   if (is_full(queue))
       return;
@@ -144,22 +145,13 @@ enqueue(queue, item)
   queue->q[queue->back] = item;
 }
 
-int is_empty(queue)
-  struct pkt_queue* queue;
-{
-  return queue->front == -1;
-}
-
-int is_full(queue)
-  struct pkt_queue* queue;
-{
-  return ((queue->front == 0 && queue->back >= queue->queue_size - 1) || queue->front == queue->back + 1);
-}
-
 struct pkt dequeue(queue)
   struct pkt_queue* queue;
 {
-  if (queue->front == -1) return;
+  if (queue->front == -1) {
+    struct pkt empty;
+    return empty;
+  }
   int front = queue->front; 
 
   if (queue->front == queue->back) {
@@ -182,8 +174,7 @@ struct pkt print_queue(queue)
   printf("\n");
 }
 
-int calc_checksum(packet)
-  struct pkt* packet;
+int calc_checksum(struct pkt* packet)
 {
   int checksum = packet->seqnum + packet->acknum;
   for (int i = 0; i < 20; i++) {
@@ -192,34 +183,29 @@ int calc_checksum(packet)
   return checksum;
 }
 
-set_checksum(packet)
-  struct pkt* packet;
+void set_checksum(struct pkt* packet)
 {
   packet->checksum = calc_checksum(packet);
 }
 
-int is_corrupted(packet)
-  struct pkt* packet;
+int is_corrupted(struct pkt* packet)
 {
   return calc_checksum(packet) != packet->checksum;
 }
 
-int next_seq(prev_seq)
-  int prev_seq;
+int next_seq(int prev_seq)
 {
   return (prev_seq + 1) % SEQ_SPACE;
 }
 
-int prev_seq(next_seq)
-  int next_seq;
+int prev_seq(int next_seq)
 {
   return abs((next_seq - 1) % SEQ_SPACE);
 }
 
 
 /* called from layer 5, passed the data to be sent to other side */
-A_output(message)
-  struct msg message;
+void A_output(struct msg message)
 {
   struct pkt packet;
   printf("Para enviar: %.20s\n", message.data);
@@ -251,14 +237,12 @@ A_output(message)
   }
 }
 
-B_output(message)  /* need be completed only for extra credit */
-  struct msg message;
+void B_output(struct msg message)  /* need be completed only for extra credit */
 {
 }
 
 /* called from layer 3, when a packet arrives for layer 4 */
-A_input(packet)
-  struct pkt packet;
+void A_input(struct pkt packet)
 {
   printf("A_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
   if (!is_corrupted(&packet)) {
@@ -289,7 +273,7 @@ A_input(packet)
 }
 
 /* called when A's timer goes off */
-A_timerinterrupt()
+void A_timerinterrupt()
 {
   for (int i = queue_start(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
     struct pkt resend_pkt = a_sender.window.q[i];
@@ -302,7 +286,7 @@ A_timerinterrupt()
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
-A_init()
+void A_init()
 {
   init_queue(&a_buffer, BUF_SIZE);
   init_queue(&a_sender.window, WINDOW_SIZE);
@@ -314,8 +298,7 @@ A_init()
 /* Note that with simplex transfer from a-to-B, there is no B_output() */
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
-B_input(packet)
-  struct pkt packet;
+void B_input(struct pkt packet)
 {
   int corrupt = is_corrupted(&packet);
   struct pkt ack = {
@@ -342,13 +325,13 @@ B_input(packet)
 }
 
 /* called when B's timer goes off */
-B_timerinterrupt()
+void B_timerinterrupt()
 {
 }
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
-B_init()
+void B_init()
 {
   b_rcver.seq = 0;
 }
