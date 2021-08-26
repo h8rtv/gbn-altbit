@@ -41,10 +41,7 @@ struct pkt {
 #define A 0
 #define B 1
 
-#define ACK_BIT  1
-#define NACK_BIT 0
-
-#define TIMEOUT  12.f
+#define TIMEOUT  20.f
 #define BUF_SIZE 50
 #define WINDOW_SIZE 8
 #define SEQ_SPACE (2 * WINDOW_SIZE)
@@ -71,6 +68,15 @@ struct rcver {
 struct sender a_sender;
 struct rcver b_rcver;
 struct pkt_queue a_buffer;
+
+int is_nack(struct pkt* packet) {
+  return strcmp(packet->payload, "NACK") == 0;
+}
+
+void make_nack(struct pkt* packet) {
+  strcpy(packet->payload, "NACK");
+}
+
 
 void init_queue(struct pkt_queue* queue, int size)
 {
@@ -165,11 +171,14 @@ struct pkt dequeue(queue)
   return queue->q[front];
 }
 
-struct pkt print_queue(queue)
-  struct pkt_queue* queue;
+struct pkt print_queue(struct pkt_queue* queue, int payload)
 {
   for (int i = queue_start(queue); i != queue_end(queue); i = queue_next(queue, i)) {
-    printf("%c ", queue->q[i].payload[0]);
+    if (payload) {
+      printf("%c ", queue->q[i].payload[0]);
+    } else {
+      printf("%d ", queue->q[i].seqnum);
+    }
   }
   printf("\n");
 }
@@ -200,7 +209,8 @@ int next_seq(int prev_seq)
 
 int prev_seq(int next_seq)
 {
-  return abs((next_seq - 1) % SEQ_SPACE);
+  if (next_seq == 0) return SEQ_SPACE - 1;
+  return next_seq - 1;
 }
 
 
@@ -213,11 +223,15 @@ void A_output(struct msg message)
   enqueue(&a_buffer, packet);
 
   if (!is_full(&a_sender.window)) {
+    if (a_sender.timer_running) {
+      stoptimer(A);
+      a_sender.timer_running = 0;
+    }
     while (!is_full(&a_sender.window) && !is_empty(&a_buffer)) {
       packet = dequeue(&a_buffer);
       packet.seqnum = a_sender.seq;
       a_sender.seq = next_seq(a_sender.seq);
-      packet.acknum = ACK_BIT;
+      packet.acknum = 0;
       set_checksum(&packet);
       tolayer3(A, packet);
       enqueue(&a_sender.window, packet);
@@ -227,19 +241,17 @@ void A_output(struct msg message)
     }
 
     printf("A_output Janela atual(enq): ");
-    print_queue(&a_sender.window);
+    print_queue(&a_sender.window, 0);
     printf("A_output Buffer Atual: ");
-    print_queue(&a_buffer);
-    if (!a_sender.timer_running) {
-      starttimer(A, TIMEOUT);
-      a_sender.timer_running = 1;
-    }
+    print_queue(&a_buffer, 1);
+    starttimer(A, TIMEOUT);
+    a_sender.timer_running = 1;
   } else {
     printf("Janela cheia, %.20s bufferizado.\n", message.data);
-    printf("A_output Buffer Atual: ");
-    print_queue(&a_buffer);
     printf("A_output Janela atual(enq): ");
-    print_queue(&a_sender.window);
+    print_queue(&a_sender.window, 0);
+    printf("A_output Buffer Atual: ");
+    print_queue(&a_buffer, 1);
   }
 }
 
@@ -253,7 +265,7 @@ void A_input(struct pkt packet)
   printf("A_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
   if (is_corrupted(&packet)) {
     printf("A_input detectou pacote corrompido.\n");
-  } else if (packet.acknum == NACK_BIT) {
+  } else if (is_nack(&packet)) {
     printf("A_input recebeu um NACK.\n");
   } else {
     int count = 0;
@@ -261,7 +273,7 @@ void A_input(struct pkt packet)
     for (int i = queue_start(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
       struct pkt cached_packet = a_sender.window.q[i];
       count++;
-      if (cached_packet.seqnum == packet.seqnum) {
+      if (cached_packet.seqnum == packet.acknum) {
         found = 1;
         break;
       }
@@ -282,7 +294,7 @@ void A_input(struct pkt packet)
       a_sender.timer_running = 1;
     }
     printf("A_input Janela atual (deq): ");
-    print_queue(&a_sender.window);
+    print_queue(&a_sender.window, 0);
   }
 }
 
@@ -316,19 +328,18 @@ void B_input(struct pkt packet)
 {
   struct pkt ack;
   memset(ack.payload, 0, 20);
+  ack.seqnum = 0;
 
   if (is_corrupted(&packet)) {
     printf("B_input detectou pacote corrompido.\n");
-    ack.seqnum = prev_seq(b_rcver.seq);
-    ack.acknum = NACK_BIT;
+    ack.acknum = prev_seq(b_rcver.seq);
+    make_nack(&ack);
   } else if (packet.seqnum != b_rcver.seq) {
     printf("B_input detectou pacote não esperado. Esperava %d e recebeu %d.\n", b_rcver.seq, packet.seqnum);
-    ack.seqnum = prev_seq(b_rcver.seq);
-    ack.acknum = ACK_BIT;
+    ack.acknum = prev_seq(b_rcver.seq);
   } else {
     printf("Recebido: %.20s\n", packet.payload);
-    ack.seqnum = packet.seqnum;
-    ack.acknum =  ACK_BIT;
+    ack.acknum = packet.seqnum;
     tolayer5(B, packet.payload);
     b_rcver.seq = next_seq(b_rcver.seq);
   }
@@ -337,6 +348,7 @@ void B_input(struct pkt packet)
   tolayer3(B, ack);
 
   printf("B_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
+  printf("B_input SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", ack.seqnum, ack.acknum, ack.checksum, ack.payload);
 }
 
 /* called when B's timer goes off */
@@ -529,7 +541,7 @@ init()                         /* initialize the simulator */
 /****************************************************************************/
 float jimsrand() 
 {
-  double mmm = 2147483647;   /* largest int  - MACHINE DEPENDENT!!!!!!!!   */
+  double mmm = RAND_MAX;   /* largest int  - MACHINE DEPENDENT!!!!!!!!   */
   float x;                   /* individual students may need to change mmm */ 
   x = rand()/mmm;            /* x should be uniform in [0,1] */
   return(x);

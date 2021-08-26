@@ -42,8 +42,6 @@ struct pkt {
 #define B 1
 
 #define TIMEOUT  20.f
-#define ACK_BIT  1
-#define NACK_BIT 0
 
 struct sender {
   int is_sending;
@@ -57,6 +55,14 @@ struct rcver {
 
 struct sender a_sender;
 struct rcver b_rcver;
+
+int is_nack(struct pkt* packet) {
+  return strcmp(packet->payload, "NACK") == 0;
+}
+
+void make_nack(struct pkt* packet) {
+  strcpy(packet->payload, "NACK");
+}
 
 int calc_checksum(struct pkt* packet)
 {
@@ -90,7 +96,7 @@ void A_output(struct msg message)
   a_sender.is_sending = 1;
   struct pkt packet;
   packet.seqnum = a_sender.seq;
-  packet.acknum = ACK_BIT;
+  packet.acknum = 0;
   strcpy(packet.payload, message.data);
 
   set_checksum(&packet);
@@ -114,10 +120,10 @@ void A_input(struct pkt packet)
   printf("A_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
   if (is_corrupted(&packet)) {
     printf("A_input detectou pacote corrompido.\n");
-  } else if (packet.acknum == NACK_BIT) {
+  } else if (is_nack(&packet)) {
     printf("A_input recebeu um NACK.\n");
   } else {
-    printf("A_input pacote %d reconhecido.\n", packet.seqnum);
+    printf("A_input pacote %d reconhecido.\n", packet.acknum);
     a_sender.is_sending = 0;
     stoptimer(A);
   }
@@ -140,7 +146,7 @@ void A_timerinterrupt()
 void A_init()
 {
   a_sender.is_sending = 0;
-  a_sender.seq = 0;
+  a_sender.seq = 1;
 }
 
 
@@ -150,20 +156,19 @@ void A_init()
 void B_input(struct pkt packet)
 {
   struct pkt ack;
+  ack.seqnum = 0;
   memset(ack.payload, 0, 20);
 
   if (is_corrupted(&packet)) {
     printf("B_input detectou pacote corrompido.\n");
-    ack.seqnum = (b_rcver.seq + 1) % 2;
-    ack.acknum = NACK_BIT;
+    ack.acknum = (b_rcver.seq + 1) % 2;
+    make_nack(&ack);
   } else if (packet.seqnum != b_rcver.seq) {
     printf("B_input detectou pacote não esperado. Esperava %d e recebeu %d.\n", b_rcver.seq, packet.seqnum);
-    ack.seqnum = (b_rcver.seq + 1) % 2;
-    ack.acknum = ACK_BIT;
+    ack.acknum = (b_rcver.seq + 1) % 2;
   } else {
     printf("Recebido: %.20s\n", packet.payload);
-    ack.seqnum = packet.seqnum;
-    ack.acknum =  ACK_BIT;
+    ack.acknum = packet.seqnum;
     tolayer5(B, packet.payload);
     b_rcver.seq = (b_rcver.seq + 1) % 2;
   }
@@ -172,6 +177,7 @@ void B_input(struct pkt packet)
   tolayer3(B, ack);
 
   printf("B_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
+  printf("B_input SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", ack.seqnum, ack.acknum, ack.checksum, ack.payload);
 }
 
 /* called when B's timer goes off */
@@ -183,7 +189,7 @@ void B_timerinterrupt()
 /* entity B routines are called. You can use it to do any initialization */
 void B_init()
 {
-  b_rcver.seq = 0;
+  b_rcver.seq = 1;
 }
 
 
