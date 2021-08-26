@@ -1,3 +1,4 @@
+// Autor das edições: Heitor Tonel Ventura
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
