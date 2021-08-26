@@ -44,7 +44,7 @@ struct pkt {
 #define ACK_BIT  1
 #define NACK_BIT 0
 
-#define TIMEOUT  10.f
+#define TIMEOUT  12.f
 #define BUF_SIZE 50
 #define WINDOW_SIZE 8
 #define SEQ_SPACE (2 * WINDOW_SIZE)
@@ -213,9 +213,6 @@ void A_output(struct msg message)
   enqueue(&a_buffer, packet);
 
   if (!is_full(&a_sender.window)) {
-    if (a_sender.timer_running) {
-      stoptimer(A);
-    }
     while (!is_full(&a_sender.window) && !is_empty(&a_buffer)) {
       packet = dequeue(&a_buffer);
       packet.seqnum = a_sender.seq;
@@ -228,12 +225,21 @@ void A_output(struct msg message)
       printf("Enviado: %.20s\n", packet.payload);
       printf("A_output SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
     }
-    printf("Janela atual(enq): ");
+
+    printf("A_output Janela atual(enq): ");
     print_queue(&a_sender.window);
-    printf("Buffer Atual: ");
+    printf("A_output Buffer Atual: ");
     print_queue(&a_buffer);
-    starttimer(A, TIMEOUT);
-    a_sender.timer_running = 1;
+    if (!a_sender.timer_running) {
+      starttimer(A, TIMEOUT);
+      a_sender.timer_running = 1;
+    }
+  } else {
+    printf("Janela cheia, %.20s bufferizado.\n", message.data);
+    printf("A_output Buffer Atual: ");
+    print_queue(&a_buffer);
+    printf("A_output Janela atual(enq): ");
+    print_queue(&a_sender.window);
   }
 }
 
@@ -245,30 +251,38 @@ void B_output(struct msg message)  /* need be completed only for extra credit */
 void A_input(struct pkt packet)
 {
   printf("A_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
-  if (!is_corrupted(&packet)) {
-    stoptimer(A);
-    if (packet.acknum == NACK_BIT) {
-      for (int i = queue_start(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
-        struct pkt last_pkt = a_sender.window.q[i];
-        printf("Reenviado (NACK): %.20s\n", last_pkt.payload);
-        printf("A_input SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", last_pkt.seqnum, last_pkt.acknum, last_pkt.checksum, last_pkt.payload);
-        tolayer3(A, last_pkt);
+  if (is_corrupted(&packet)) {
+    printf("A_input detectou pacote corrompido.\n");
+  } else if (packet.acknum == NACK_BIT) {
+    printf("A_input recebeu um NACK.\n");
+  } else {
+    int count = 0;
+    int found = 0;
+    for (int i = queue_start(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
+      struct pkt cached_packet = a_sender.window.q[i];
+      count++;
+      if (cached_packet.seqnum == packet.seqnum) {
+        found = 1;
+        break;
       }
-    } else {
-      int count = 0;
-      for (int i = queue_start(&a_sender.window); i != queue_end(&a_sender.window); i = queue_next(&a_sender.window, i)) {
-        struct pkt cached_packet = a_sender.window.q[i];
-        count++;
-        if (cached_packet.seqnum == packet.seqnum) break;
-      }
+    }
+    if (found) {
+      printf("A_input pacote(s): ");
       while (count > 0) {
-        dequeue(&a_sender.window);
+        struct pkt rec = dequeue(&a_sender.window);
+        printf("%d ", rec.seqnum);
         count--;
       }
-      printf("Janela atual (deq): ");
-      print_queue(&a_sender.window);
+      printf("reconhecido(s).\n");
     }
-    starttimer(A, TIMEOUT);
+    stoptimer(A);
+    a_sender.timer_running = 0;
+    if (!is_empty(&a_sender.window)) {
+      starttimer(A, TIMEOUT);
+      a_sender.timer_running = 1;
+    }
+    printf("A_input Janela atual (deq): ");
+    print_queue(&a_sender.window);
   }
 }
 
@@ -300,27 +314,28 @@ void A_init()
 /* called from layer 3, when a packet arrives for layer 4 at B*/
 void B_input(struct pkt packet)
 {
-  int corrupt = is_corrupted(&packet);
-  struct pkt ack = {
-    .seqnum = packet.seqnum,
-    .acknum = corrupt ? NACK_BIT : ACK_BIT,
-    .payload = "",
-  };
+  struct pkt ack;
+  memset(ack.payload, 0, 20);
 
-  if (!corrupt) {
-    if (packet.seqnum == b_rcver.seq) {
-      printf("Recebido: %.20s\n", packet.payload);
-      tolayer5(B, packet.payload);
-      b_rcver.seq = next_seq(b_rcver.seq);
-    } else {
-      ack.seqnum = prev_seq(b_rcver.seq);
-    }
-
-    set_checksum(&ack);
-    tolayer3(B, ack);
+  if (is_corrupted(&packet)) {
+    printf("B_input detectou pacote corrompido.\n");
+    ack.seqnum = prev_seq(b_rcver.seq);
+    ack.acknum = NACK_BIT;
+  } else if (packet.seqnum != b_rcver.seq) {
+    printf("B_input detectou pacote não esperado. Esperava %d e recebeu %d.\n", b_rcver.seq, packet.seqnum);
+    ack.seqnum = prev_seq(b_rcver.seq);
+    ack.acknum = ACK_BIT;
+  } else {
+    printf("Recebido: %.20s\n", packet.payload);
+    ack.seqnum = packet.seqnum;
+    ack.acknum =  ACK_BIT;
+    tolayer5(B, packet.payload);
+    b_rcver.seq = next_seq(b_rcver.seq);
   }
 
-  printf("B_input está esperando por: %d\n", b_rcver.seq);
+  set_checksum(&ack);
+  tolayer3(B, ack);
+
   printf("B_input RCVD: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
 }
 

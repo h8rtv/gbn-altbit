@@ -83,7 +83,7 @@ void A_output(struct msg message)
 {
   printf("Para enviar: %.20s\n", message.data);
   if (a_sender.is_sending) {
-    printf("Um pacote já está sendo enviado.\n");
+    printf("A_output: Um pacote já está sendo enviado.\n");
     return;
   }
 
@@ -100,7 +100,7 @@ void A_output(struct msg message)
   a_sender.seq = (a_sender.seq + 1) % 2;
   a_sender.last_packet = packet;
 
-  printf("Enviado: %s\n", packet.payload);
+  printf("Enviado: %.20s\n", packet.payload);
   printf("A_output SENT: seqnum: %d, acknum: %d, checksum: %d, payload: %.20s\n", packet.seqnum, packet.acknum, packet.checksum, packet.payload);
 }
 
@@ -154,11 +154,11 @@ void B_input(struct pkt packet)
 
   if (is_corrupted(&packet)) {
     printf("B_input detectou pacote corrompido.\n");
-    ack.seqnum = b_rcver.seq;
+    ack.seqnum = (b_rcver.seq + 1) % 2;
     ack.acknum = NACK_BIT;
   } else if (packet.seqnum != b_rcver.seq) {
     printf("B_input detectou pacote não esperado. Esperava %d e recebeu %d.\n", b_rcver.seq, packet.seqnum);
-    ack.seqnum = b_rcver.seq;
+    ack.seqnum = (b_rcver.seq + 1) % 2;
     ack.acknum = ACK_BIT;
   } else {
     printf("Recebido: %.20s\n", packet.payload);
